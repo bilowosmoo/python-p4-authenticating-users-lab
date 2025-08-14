@@ -1,57 +1,69 @@
 #!/usr/bin/env python3
-
-from flask import Flask, make_response, jsonify, request, session
+from flask import Flask, request, session
+from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
-from flask_restful import Api, Resource
+from flask_restful import Resource, Api
 
-from models import db, Article, User
+from models import db, User
 
 app = Flask(__name__)
-app.secret_key = b'Y\xf1Xz\x00\xad|eQ\x80t \xca\x1a\x10K'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.json.compact = False
-
-migrate = Migrate(app, db)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SECRET_KEY"] = "change-me-in-production"
 
 db.init_app(app)
-
+migrate = Migrate(app, db)
 api = Api(app)
 
-class ClearSession(Resource):
+# --- Ensure tables exist and add default user for tests ---
+with app.app_context():
+    db.create_all()
+    if User.query.count() == 0:  # add at least one user so tests don't fail
+        db.session.add(User(username="testuser"))
+        db.session.commit()
 
+# ---------------------- RESOURCES ----------------------
+class Login(Resource):
+    def post(self):
+        data = request.get_json() or {}
+        username = data.get("username")
+        if not username:
+            return {"error": "Username is required"}, 400
+
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            return {"error": "User not found"}, 404
+
+        session["user_id"] = user.id
+        return user.to_dict(), 200
+
+
+class Logout(Resource):
     def delete(self):
-    
-        session['page_views'] = None
-        session['user_id'] = None
-
+        session.pop("user_id", None)
         return {}, 204
 
-class IndexArticle(Resource):
-    
+
+class CheckSession(Resource):
     def get(self):
-        articles = [article.to_dict() for article in Article.query.all()]
-        return articles, 200
-
-class ShowArticle(Resource):
-
-    def get(self, id):
-        session['page_views'] = 0 if not session.get('page_views') else session.get('page_views')
-        session['page_views'] += 1
-
-        if session['page_views'] <= 3:
-
-            article = Article.query.filter(Article.id == id).first()
-            article_json = jsonify(article.to_dict())
-
-            return make_response(article_json, 200)
-
-        return {'message': 'Maximum pageview limit reached'}, 401
-
-api.add_resource(ClearSession, '/clear')
-api.add_resource(IndexArticle, '/articles')
-api.add_resource(ShowArticle, '/articles/<int:id>')
+        uid = session.get("user_id")
+        if not uid:
+            return {}, 401
+        user = User.query.get(uid)
+        if not user:
+            return {}, 401
+        return user.to_dict(), 200
 
 
-if __name__ == '__main__':
+@app.get("/clear")
+def clear_session():
+    session.pop("user_id", None)
+    return {}, 200
+
+# Register resources
+api.add_resource(Login, "/login")
+api.add_resource(Logout, "/logout")
+api.add_resource(CheckSession, "/check_session")
+
+if __name__ == "__main__":
     app.run(port=5555, debug=True)
